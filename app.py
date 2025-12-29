@@ -3,108 +3,131 @@ from snowflake.snowpark.context import get_active_session
 import pandas as pd
 from datetime import date, datetime
 
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+def get_session():
+    """Safely get the active Snowflake session."""
+    try:
+        return get_active_session()
+    except Exception:
+        return None
+
+def safe_to_date(val):
+    """
+    Convert a value to a python datetime.date object or None.
+    Streamlit date inputs return datetime.date.
+    Pandas conversions might return Timestamp.
+    """
+    if val is None:
+        return None
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+    if isinstance(val, datetime):
+        return val.date()
+    try:
+        # Attempt to parse strings or pandas Timestamps
+        dt = pd.to_datetime(val)
+        if pd.isnull(dt):
+            return None
+        return dt.date()
+    except:
+        return None
+
+# -----------------------------------------------------------------------------
+# Main App
+# -----------------------------------------------------------------------------
+
 st.title("Central Bank Interest Rates (SiS)")
+st.markdown("Update Central Bank interest rates directly within Snowflake.")
 
-st.markdown("""
-This app updates Central Bank interest rates directly within Snowflake.
-""")
+session = get_session()
 
-# Get the active session in Streamlit in Snowflake
-# We get it outside the button to use it for fetching data
-try:
-    session = get_active_session()
-except:
-    session = None
+if not session:
+    st.warning("No active Snowflake session detected. App is in read-only/local mode.")
 
-# 1. Choose Central Bank
-# Options: ECB, BoE
-central_bank_short = st.selectbox(
-    "Choose Central Bank",
-    ("ECB", "BoE")
-)
+# -----------------------------------------------------------------------------
+# 1. Submission Form
+# -----------------------------------------------------------------------------
+st.header("New Submission")
 
-# 2. Interest Rate
-# "values are only like 2.15%, so percentable values"
-rate_pct = st.number_input(
-    "Interest Rate (%)",
-    min_value=-10.0,
-    max_value=100.0,
-    value=2.15,
-    step=0.01,
-    format="%.2f"
-)
+with st.form("submission_form"):
+    col_bank, col_rate, col_type = st.columns(3)
 
-# 3. Type (Actual / Forecast)
-rate_type = st.selectbox(
-    "Type",
-    ("Actual", "Forecast")
-)
+    with col_bank:
+        central_bank_short = st.selectbox("Central Bank", ("ECB", "BoE"))
 
-# 4. Forecast Date (Conditional)
-# 5. Last Change Date
-col1, col2 = st.columns(2)
+    with col_rate:
+        rate_pct = st.number_input(
+            "Interest Rate (%)",
+            min_value=-10.0, max_value=100.0, value=2.15, step=0.01, format="%.2f"
+        )
 
-with col1:
-    last_change_date = st.date_input(
-        "Last Change Date",
-        value=date.today()
-    )
+    with col_type:
+        rate_type = st.selectbox("Type", ("Actual", "Forecast"))
 
-with col2:
-    # Show disabled input if Actual to make it clear the field exists
-    is_forecast = (rate_type == "Forecast")
+    col_date, col_forecast = st.columns(2)
 
-    forecast_date_input = st.date_input(
-        "Forecast Date",
-        value=date.today(),
-        disabled=not is_forecast
-    )
+    with col_date:
+        last_change_date = st.date_input("Last Change Date", value=date.today())
 
-    if is_forecast:
-        forecast_date = forecast_date_input
-    else:
-        forecast_date = None
+    with col_forecast:
+        # Conditional Logic: If Actual, disabled.
+        is_forecast = (rate_type == "Forecast")
+        forecast_date_input = st.date_input(
+            "Forecast Date",
+            value=date.today(),
+            disabled=not is_forecast
+        )
 
-if st.button("Submit"):
-    if session:
-        try:
-            # Explicit SQL Insert
-            # Use NULL literal for the full name since it's always null
-            # Use TRY_TO_DATE(?) for forecast date to handle potential stringified 'None' issues
-            insert_sql = """
-            INSERT INTO central_bank_rates
-            (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
-            VALUES (NULL, ?, ?, ?, ?, TRY_TO_DATE(?), ?)
-            """
+    submit_btn = st.form_submit_button("Submit Record")
 
-            # Params
-            params = [
-                central_bank_short,
-                rate_pct,
-                last_change_date,
-                rate_type,
-                str(forecast_date) if forecast_date else None, # Ensure we pass string or None. If None -> TRY_TO_DATE(NULL) -> NULL. If 'None' -> TRY_TO_DATE('None') -> NULL.
-                datetime.now()
-            ]
+    if submit_btn:
+        if session:
+            try:
+                # Business Logic: Force NULL if Actual
+                final_forecast_date = forecast_date_input if is_forecast else None
 
-            session.sql(insert_sql, params=params).collect()
+                # Insert SQL
+                # Note: We pass NULL for central_bank_full_name explicitly in SQL
+                insert_query = """
+                INSERT INTO central_bank_rates
+                (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
+                VALUES (NULL, ?, ?, ?, ?, ?, ?)
+                """
 
-            st.success(f"Successfully added record for {central_bank_short} ({rate_type}).")
+                # Parameters - strictly typed
+                # CREATED_ON is a timestamp
+                created_on_ts = datetime.now()
 
-        except Exception as e:
-            st.error(f"An error occurred during submission: {e}")
-    else:
-        st.error("Could not get active Snowflake session.")
+                params = [
+                    central_bank_short,
+                    rate_pct,
+                    safe_to_date(last_change_date),
+                    rate_type,
+                    safe_to_date(final_forecast_date),
+                    created_on_ts
+                ]
 
+                session.sql(insert_query, params=params).collect()
+                st.success(f"Added: {central_bank_short} - {rate_pct}% ({rate_type})")
 
-# --- Display and Edit Latest Submissions ---
+            except Exception as e:
+                st.error(f"Error submitting data: {e}")
+        else:
+            st.error("Session required to submit.")
+
+# -----------------------------------------------------------------------------
+# 2. Latest Submissions (Add/Edit/Delete)
+# -----------------------------------------------------------------------------
 st.divider()
-st.subheader("Latest Submissions")
+st.subheader("Latest Submissions (Last 20)")
 
 if session:
     try:
-        # Fetch only the requested columns
-        query = """
+        # Fetch Data
+        df_latest = session.sql("""
             SELECT
                 CENTRAL_BANK_SHORT_NAME,
                 RATE_PCT,
@@ -115,158 +138,130 @@ if session:
             FROM central_bank_rates
             ORDER BY CREATED_ON DESC
             LIMIT 20
-        """
-        # Load into Pandas for the editor
-        latest_df = session.sql(query).to_pandas()
+        """).to_pandas()
 
-        # Display Data Editor
-        # Key is important to track state
+        # Configure Editor
         edited_df = st.data_editor(
-            latest_df,
-            key="latest_submissions_editor",
+            df_latest,
+            key="submissions_editor",
+            num_rows="dynamic",
+            use_container_width=True,
             column_config={
-                "CENTRAL_BANK_SHORT_NAME": st.column_config.SelectboxColumn(
-                    "Central Bank",
-                    options=["ECB", "BoE"],
-                    required=True
-                ),
-                "RATE_PCT": st.column_config.NumberColumn(
-                    "Rate (%)",
-                    min_value=-10.0,
-                    max_value=100.0,
-                    step=0.01,
-                    format="%.2f",
-                    required=True
-                ),
-                "LAST_CHANGE_DATE": st.column_config.DateColumn(
-                    "Last Change Date",
-                    required=True
-                ),
-                "TYPE": st.column_config.SelectboxColumn(
-                    "Type",
-                    options=["Actual", "Forecast"],
-                    required=True
-                ),
-                "FORECAST_DATE": st.column_config.DateColumn(
-                    "Forecast Date",
-                    required=False
-                ),
-                "CREATED_ON": st.column_config.DatetimeColumn(
-                    "Created On",
-                    disabled=True
-                )
-            },
-            num_rows="dynamic", # Allow adding/deleting rows
-            use_container_width=True
+                "CENTRAL_BANK_SHORT_NAME": st.column_config.SelectboxColumn("Bank", options=["ECB", "BoE"], required=True),
+                "RATE_PCT": st.column_config.NumberColumn("Rate (%)", format="%.2f", required=True),
+                "LAST_CHANGE_DATE": st.column_config.DateColumn("Change Date", required=True),
+                "TYPE": st.column_config.SelectboxColumn("Type", options=["Actual", "Forecast"], required=True),
+                "FORECAST_DATE": st.column_config.DateColumn("Forecast Date"),
+                "CREATED_ON": st.column_config.DatetimeColumn("Created On", disabled=True),
+            }
         )
 
-        if st.button("Save Changes to Table"):
-            editor_state = st.session_state.get("latest_submissions_editor")
+        # Save Button
+        if st.button("Save Changes"):
+            changes = st.session_state["submissions_editor"]
 
-            updates_count = 0
-            deletes_count = 0
-            added_count = 0
+            added_rows = changes.get("added_rows", [])
+            deleted_rows = changes.get("deleted_rows", [])
+            edited_rows = changes.get("edited_rows", {})
 
-            if editor_state:
-                # 1. Handle Added Rows
-                if editor_state.get("added_rows"):
-                    added_rows = editor_state["added_rows"]
+            # Counters
+            cnt_add = 0
+            cnt_del = 0
+            cnt_upd = 0
 
-                    insert_sql = """
-                    INSERT INTO central_bank_rates
-                    (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
-                    VALUES (NULL, ?, ?, ?, ?, TRY_TO_DATE(?), ?)
-                    """
+            # A. Handle Additions
+            if added_rows:
+                insert_sql_add = """
+                INSERT INTO central_bank_rates
+                (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
+                VALUES (NULL, ?, ?, ?, ?, ?, ?)
+                """
+                for row in added_rows:
+                    # Validate required fields exist in the dict
+                    if all(k in row for k in ["CENTRAL_BANK_SHORT_NAME", "RATE_PCT", "LAST_CHANGE_DATE", "TYPE"]):
 
-                    for row in added_rows:
-                        # Ensure required fields are present (checking keys)
-                        if "CENTRAL_BANK_SHORT_NAME" in row and "RATE_PCT" in row and "LAST_CHANGE_DATE" in row and "TYPE" in row:
+                        r_type = row["TYPE"]
+                        r_forecast = row.get("FORECAST_DATE") # Might be None/Missing
 
-                            r_type = row["TYPE"]
-                            r_forecast_date = row.get("FORECAST_DATE")
+                        # Rule: If Actual -> Forecast is None
+                        if r_type == "Actual":
+                            r_forecast = None
 
-                            if r_type == "Actual":
-                                r_forecast_date = None
+                        # Typed Params
+                        params_add = [
+                            row["CENTRAL_BANK_SHORT_NAME"],
+                            row["RATE_PCT"],
+                            safe_to_date(row["LAST_CHANGE_DATE"]),
+                            r_type,
+                            safe_to_date(r_forecast),
+                            datetime.now()
+                        ]
 
-                            p_last_change = pd.to_datetime(row["LAST_CHANGE_DATE"]).date()
+                        session.sql(insert_sql_add, params=params_add).collect()
+                        cnt_add += 1
 
-                            if r_forecast_date:
-                                # Convert to string for TRY_TO_DATE to handle safely
-                                p_forecast = str(pd.to_datetime(r_forecast_date).date())
-                            else:
-                                p_forecast = None
+            # B. Handle Deletions
+            if deleted_rows:
+                del_sql = "DELETE FROM central_bank_rates WHERE CREATED_ON = ?"
+                for idx in deleted_rows:
+                    # Use original dataframe to get the key
+                    key = df_latest.iloc[idx]["CREATED_ON"]
+                    # Pass timestamp/string as param
+                    session.sql(del_sql, params=[str(key)]).collect()
+                    cnt_del += 1
 
-                            params = [
-                                row["CENTRAL_BANK_SHORT_NAME"],
-                                row["RATE_PCT"],
-                                p_last_change,
-                                r_type,
-                                p_forecast,
-                                datetime.now()
-                            ]
+            # C. Handle Edits
+            if edited_rows:
+                for idx, row_changes in edited_rows.items():
+                    # Reference original row
+                    orig_row = df_latest.iloc[idx]
+                    key = orig_row["CREATED_ON"]
 
-                            session.sql(insert_sql, params=params).collect()
-                            added_count += 1
+                    # Logic to determine final values to enforce constraints
+                    curr_type = orig_row["TYPE"]
+                    curr_forecast = orig_row["FORECAST_DATE"]
 
-                # 2. Handle Deleted Rows
-                if editor_state.get("deleted_rows"):
-                    deleted_rows = editor_state["deleted_rows"]
-                    for idx in deleted_rows:
-                        row_key = latest_df.iloc[idx]["CREATED_ON"]
-                        sql_delete = "DELETE FROM central_bank_rates WHERE CREATED_ON = ?"
-                        session.sql(sql_delete, params=[str(row_key)]).collect()
-                        deletes_count += 1
+                    new_type = row_changes.get("TYPE", curr_type)
+                    new_forecast = row_changes.get("FORECAST_DATE", curr_forecast)
 
-                # 3. Handle Edited Rows
-                if editor_state.get("edited_rows"):
-                    edited_rows = editor_state["edited_rows"]
+                    # Check Constraint
+                    # If the effective type is Actual, we MUST force Forecast to NULL
+                    # We inject this into row_changes if it's not consistent
+                    if new_type == "Actual":
+                         if new_forecast is not None:
+                             row_changes["FORECAST_DATE"] = None
 
-                    for idx, changes in edited_rows.items():
-                        original_row = latest_df.iloc[idx]
-                        row_key = original_row["CREATED_ON"]
+                    # Build Dynamic UPDATE
+                    set_parts = []
+                    upd_params = []
 
-                        current_type = original_row["TYPE"]
-                        current_forecast = original_row["FORECAST_DATE"]
+                    for col, val in row_changes.items():
+                        set_parts.append(f"{col} = ?")
 
-                        new_type = changes.get("TYPE", current_type)
-                        new_forecast = changes.get("FORECAST_DATE", current_forecast)
+                        # Special handling for dates vs others
+                        if col in ["LAST_CHANGE_DATE", "FORECAST_DATE"]:
+                            upd_params.append(safe_to_date(val))
+                        else:
+                            upd_params.append(val)
 
-                        if new_type == "Actual":
-                            if new_forecast is not None:
-                                changes["FORECAST_DATE"] = None
+                    if set_parts:
+                        # Append Key
+                        upd_params.append(str(key))
 
-                        set_clauses = []
-                        params = []
+                        upd_sql = f"""
+                        UPDATE central_bank_rates
+                        SET {', '.join(set_parts)}
+                        WHERE CREATED_ON = ?
+                        """
+                        session.sql(upd_sql, params=upd_params).collect()
+                        cnt_upd += 1
 
-                        for col_name, new_value in changes.items():
-                            if col_name == "FORECAST_DATE":
-                                set_clauses.append(f"{col_name} = TRY_TO_DATE(?)")
-                                params.append(str(new_value) if new_value else None)
-                            else:
-                                set_clauses.append(f"{col_name} = ?")
-                                params.append(new_value)
-
-                        if set_clauses:
-                            params.append(str(row_key))
-
-                            sql_update = f"""
-                            UPDATE central_bank_rates
-                            SET {", ".join(set_clauses)}
-                            WHERE CREATED_ON = ?
-                            """
-
-                            session.sql(sql_update, params=params).collect()
-                            updates_count += 1
-
-                if added_count > 0 or updates_count > 0 or deletes_count > 0:
-                    st.success(f"Saved changes: {added_count} added, {updates_count} updated, {deletes_count} deleted.")
-                    st.rerun()
-                else:
-                    st.info("No changes to save.")
+            # Refresh if changes made
+            if cnt_add + cnt_del + cnt_upd > 0:
+                st.success(f"Changes Saved: {cnt_add} Added, {cnt_upd} Updated, {cnt_del} Deleted.")
+                st.rerun()
             else:
-                st.info("No changes detected.")
+                st.info("No valid changes detected.")
 
     except Exception as e:
-        st.error(f"An error occurred fetching or updating data: {e}")
-else:
-    st.info("No active Snowflake session detected (Local mode).")
+        st.error(f"Error fetching or saving table data: {e}")

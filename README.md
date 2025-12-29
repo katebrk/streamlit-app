@@ -38,7 +38,7 @@ create table central_bank_rates (
 ## Features
 
 *   **Input Form**: Submit new interest rate entries.
-    *   Dynamic "Forecast Date" field appears only when "Type" is "Forecast".
+    *   Dynamic "Forecast Date" field (disabled when "Type" is "Actual").
 *   **Latest Submissions Table**:
     *   View the last 20 submissions.
     *   **Edit**: Modify existing values. If "Type" is changed to "Actual", "Forecast Date" is automatically cleared.
