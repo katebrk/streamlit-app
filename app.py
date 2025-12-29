@@ -1,24 +1,26 @@
 import streamlit as st
-import snowflake.connector
+from snowflake.snowpark.context import get_active_session
+import pandas as pd
 from datetime import date
 
-st.title("Central Bank Interest Rates")
+st.title("Central Bank Interest Rates (SiS)")
 
 st.markdown("""
-This app allows you to update Central Bank interest rates securely to Snowflake.
+This app updates Central Bank interest rates directly within Snowflake.
 """)
 
 # 1. Choose Central Bank
-central_bank = st.selectbox(
+# Options: ECB, BoE
+central_bank_short = st.selectbox(
     "Choose Central Bank",
     ("ECB", "BoE")
 )
 
 # 2. Interest Rate
 # "values are only like 2.15%, so percentable values"
-interest_rate = st.number_input(
+rate_pct = st.number_input(
     "Interest Rate (%)",
-    min_value=-10.0, # Interest rates can be negative
+    min_value=-10.0,
     max_value=100.0,
     value=2.15,
     step=0.01,
@@ -26,61 +28,42 @@ interest_rate = st.number_input(
 )
 
 # 3. Last Change Date
-change_date = st.date_input(
+last_change_date = st.date_input(
     "Last Change Date",
     value=date.today()
 )
 
 if st.button("Submit"):
-    # Secure connection to Snowflake
     try:
-        # Check if secrets are available
-        # Streamlit secrets are accessed via st.secrets
-        # We expect a section named [snowflake]
-        if 'snowflake' not in st.secrets:
-            st.error("Snowflake secrets are not configured. Please set them in `.streamlit/secrets.toml` or as environment variables on your deployment platform.")
-            st.code("""
-# Example .streamlit/secrets.toml
-[snowflake]
-user = "your_username"
-password = "your_password"
-account = "your_account_identifier"
-warehouse = "your_warehouse"
-database = "INTEREST_RATES"
-schema = "PUBLIC"
-            """, language="toml")
-            st.stop()
+        # Get the active session in Streamlit in Snowflake
+        session = get_active_session()
 
-        # Establish connection
-        # It is recommended to use st.connection("snowflake") if available in newer streamlit versions or manual connection like this
-        conn = snowflake.connector.connect(
-            user=st.secrets["snowflake"]["user"],
-            password=st.secrets["snowflake"]["password"],
-            account=st.secrets["snowflake"]["account"],
-            warehouse=st.secrets["snowflake"].get("warehouse"),
-            database=st.secrets["snowflake"].get("database", "INTEREST_RATES"),
-            schema=st.secrets["snowflake"].get("schema", "PUBLIC")
-        )
+        # Construct the SQL statement
+        # Table: central_bank_rates
+        # Columns: central_bank_full_name, central_bank_short_name, rate_pct, last_change_date
+        # central_bank_full_name should be NULL
 
-        cursor = conn.cursor()
+        # We can use a parameterized query with session.sql()
+        # Note: Snowpark session.sql() doesn't support %s style params in the same way strictly as the connector
+        # but we can construct the string safely or use a dataframe write.
+        # Writing a single row via DataFrame is often cleaner in Snowpark to handle types.
 
-        # Use parameterized query to prevent SQL injection
-        # Assuming the table structure matches the inputs
-        query = """
-        INSERT INTO INTEREST_RATES.PUBLIC.CENTRAL_BANK_RATES
-        (CENTRAL_BANK, INTEREST_RATE, LAST_CHANGE_DATE)
-        VALUES (%s, %s, %s)
-        """
+        df_data = pd.DataFrame([{
+            "CENTRAL_BANK_FULL_NAME": None,
+            "CENTRAL_BANK_SHORT_NAME": central_bank_short,
+            "RATE_PCT": rate_pct,
+            "LAST_CHANGE_DATE": pd.to_datetime(last_change_date)
+        }])
 
-        cursor.execute(query, (central_bank, interest_rate, change_date))
+        # Create a Snowpark DataFrame
+        snowpark_df = session.create_dataframe(df_data)
 
-        conn.commit()
-        st.success(f"Successfully added record for {central_bank} with rate {interest_rate}% on {change_date}.")
+        # Write to the table
+        # Assuming the table already exists as per instructions.
+        # "append" mode adds the data.
+        snowpark_df.write.mode("append").save_as_table("central_bank_rates")
 
-    except snowflake.connector.errors.ProgrammingError as e:
-        st.error(f"Snowflake Programming Error: {e}")
+        st.success(f"Successfully added record for {central_bank_short} with rate {rate_pct}% on {last_change_date}.")
+
     except Exception as e:
         st.error(f"An error occurred: {e}")
-    finally:
-        if 'conn' in locals() and conn:
-            conn.close()

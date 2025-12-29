@@ -1,41 +1,40 @@
-# Central Bank Interest Rates App
+# Streamlit in Snowflake (SiS) App
 
-This is a Streamlit app that allows users to input interest rates for central banks (ECB, BoE) and store them in a Snowflake table.
+This repository contains the code for a Streamlit application designed to run **directly inside Snowflake** (Streamlit in Snowflake).
 
-## Setup
+## Purpose
 
-1.  **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+The app allows users to manually input interest rate data for central banks (ECB, BoE) and insert it into a Snowflake table.
 
-2.  **Configure Secrets:**
-    Create a `.streamlit/secrets.toml` file in the root directory (or configure secrets in your Streamlit Cloud dashboard).
+## Snowflake Table Schema
 
-    ```toml
-    [snowflake]
-    user = "your_username"
-    password = "your_password"
-    account = "your_account_identifier"
-    warehouse = "your_warehouse"
-    database = "INTEREST_RATES"
-    schema = "PUBLIC"
-    ```
+The app expects the following table to exist in your Snowflake environment:
 
-    *Note: Do not commit `.streamlit/secrets.toml` to version control.*
+```sql
+create table central_bank_rates (
+    central_bank_full_name VARCHAR(100),
+    central_bank_short_name VARCHAR(100),
+    rate_pct NUMBER(5,2),
+    last_change_date DATE
+);
+```
 
-3.  **Run the App:**
-    ```bash
-    streamlit run app.py
-    ```
+## How to Deploy
 
-## Functionality
+1.  Log in to Snowsight (Snowflake Web Interface).
+2.  Navigate to **Streamlit** in the left menu.
+3.  Click **+ Streamlit App**.
+4.  Provide a name and select the Warehouse and Database/Schema where the `central_bank_rates` table resides.
+5.  Paste the contents of `app.py` into the editor.
+6.  Click **Run**.
 
-*   **Choose Central Bank:** Select between ECB and BoE.
-*   **Interest Rate:** Input the interest rate percentage.
-*   **Last Change Date:** Select the date of the last rate change.
-*   **Submit:** Inserts the data into `INTEREST_RATES.PUBLIC.CENTRAL_BANK_RATES`.
+## Local Development
 
-## Security
+*Note: This code is specifically written for the Streamlit in Snowflake environment and uses `snowflake.snowpark.context.get_active_session()`. It will not run locally without modification or a mock session.*
 
-This app uses Streamlit Secrets management to handle Snowflake credentials securely. No credentials are hardcoded in the source code.
+## Dependencies
+
+When configuring the app in Snowflake, ensure the following packages are selected (usually available by default or via Anaconda integration):
+*   `snowflake-snowpark-python`
+*   `pandas`
+*   `streamlit`
