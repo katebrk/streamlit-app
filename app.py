@@ -1,7 +1,7 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 
 st.title("Central Bank Interest Rates (SiS)")
 
@@ -83,7 +83,7 @@ if st.button("Submit"):
                 last_change_date,
                 rate_type,
                 forecast_date,
-                pd.Timestamp.now()
+                datetime.now() # Use standard python datetime
             ]
 
             session.sql(insert_sql, params=params).collect()
@@ -188,14 +188,23 @@ if session:
                             if r_type == "Actual":
                                 r_forecast_date = None
 
+                            # Convert dates safely to python date objects
+                            # pd.to_datetime returns Timestamp, .date() converts to datetime.date
+                            p_last_change = pd.to_datetime(row["LAST_CHANGE_DATE"]).date()
+
+                            if r_forecast_date:
+                                p_forecast = pd.to_datetime(r_forecast_date).date()
+                            else:
+                                p_forecast = None
+
                             params = [
                                 None,
                                 row["CENTRAL_BANK_SHORT_NAME"],
                                 row["RATE_PCT"],
-                                pd.to_datetime(row["LAST_CHANGE_DATE"]),
+                                p_last_change,
                                 r_type,
-                                pd.to_datetime(r_forecast_date) if r_forecast_date else None,
-                                pd.Timestamp.now()
+                                p_forecast,
+                                datetime.now()
                             ]
 
                             session.sql(insert_sql, params=params).collect()
@@ -206,6 +215,9 @@ if session:
                     deleted_rows = editor_state["deleted_rows"]
                     for idx in deleted_rows:
                         row_key = latest_df.iloc[idx]["CREATED_ON"]
+                        # row_key is Timestamp, convert to string or datetime for safety if needed,
+                        # but usually param binding handles existing timestamps fine.
+                        # Using str(row_key) is often safe for simple equality checks.
                         sql_delete = "DELETE FROM central_bank_rates WHERE CREATED_ON = ?"
                         session.sql(sql_delete, params=[str(row_key)]).collect()
                         deletes_count += 1
@@ -244,6 +256,12 @@ if session:
 
                         for col_name, new_value in changes.items():
                             set_clauses.append(f"{col_name} = ?")
+
+                            # Handle potential conversions if new_value is ambiguous
+                            # st.data_editor might return strings for dates
+                            # But usually parameterized queries handle strings for dates OK.
+                            # If we want to be super strict, we could check types.
+                            # For now, we trust basic binding unless it fails.
                             params.append(new_value)
 
                         if set_clauses:
