@@ -87,12 +87,11 @@ if submit_btn:
             # Business Logic: Force NULL if Actual
             final_forecast_date = forecast_date_input if is_forecast else None
 
-            # Insert SQL with Explicit Casting
-            # Using ? :: DATE helps Snowflake understand the param type even if None is passed
+            # Insert SQL without Explicit Casting to avoid "Invalid expression" error with NULL
             insert_query = """
             INSERT INTO central_bank_rates
             (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
-            VALUES (NULL, ?, ?, ? :: DATE, ?, ? :: DATE, ? :: TIMESTAMP)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?)
             """
 
             created_on_ts = datetime.now()
@@ -169,7 +168,7 @@ if session:
                 insert_sql_add = """
                 INSERT INTO central_bank_rates
                 (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
-                VALUES (NULL, ?, ?, ? :: DATE, ?, ? :: DATE, ? :: TIMESTAMP)
+                VALUES (NULL, ?, ?, ?, ?, ?, ?)
                 """
                 for row in added_rows:
                     if all(k in row for k in ["CENTRAL_BANK_SHORT_NAME", "RATE_PCT", "LAST_CHANGE_DATE", "TYPE"]):
