@@ -91,7 +91,29 @@ if session:
         edited_df = st.data_editor(
             latest_df,
             key="latest_submissions_editor",
-            disabled=["CREATED_ON"], # Prevent editing the key
+            column_config={
+                "CENTRAL_BANK_SHORT_NAME": st.column_config.SelectboxColumn(
+                    "Central Bank",
+                    options=["ECB", "BoE"],
+                    required=True
+                ),
+                "RATE_PCT": st.column_config.NumberColumn(
+                    "Rate (%)",
+                    min_value=-10.0,
+                    max_value=100.0,
+                    step=0.01,
+                    format="%.2f",
+                    required=True
+                ),
+                "LAST_CHANGE_DATE": st.column_config.DateColumn(
+                    "Date",
+                    required=True
+                ),
+                "CREATED_ON": st.column_config.DatetimeColumn(
+                    "Created On",
+                    disabled=True
+                )
+            },
             num_rows="dynamic", # Allow adding/deleting rows
             use_container_width=True
         )
@@ -101,11 +123,31 @@ if session:
 
             updates_count = 0
             deletes_count = 0
+            added_count = 0
 
             if editor_state:
-                # 1. Handle Added Rows (Ignored)
+                # 1. Handle Added Rows
                 if editor_state.get("added_rows"):
-                    st.warning("Adding rows via the table is not supported. Please use the form above.")
+                    added_rows = editor_state["added_rows"]
+                    new_records = []
+
+                    for row in added_rows:
+                        # Ensure required fields are present (checking keys)
+                        # Note: In the editor, 'CREATED_ON' will be missing or ignored
+                        if "CENTRAL_BANK_SHORT_NAME" in row and "RATE_PCT" in row and "LAST_CHANGE_DATE" in row:
+                            new_records.append({
+                                "CENTRAL_BANK_FULL_NAME": None,
+                                "CENTRAL_BANK_SHORT_NAME": row["CENTRAL_BANK_SHORT_NAME"],
+                                "RATE_PCT": row["RATE_PCT"],
+                                "LAST_CHANGE_DATE": pd.to_datetime(row["LAST_CHANGE_DATE"]),
+                                "CREATED_ON": pd.Timestamp.now()
+                            })
+
+                    if new_records:
+                        df_new = pd.DataFrame(new_records)
+                        # Append to Snowflake table
+                        session.create_dataframe(df_new).write.mode("append").save_as_table("central_bank_rates")
+                        added_count = len(new_records)
 
                 # 2. Handle Deleted Rows
                 if editor_state.get("deleted_rows"):
@@ -125,7 +167,6 @@ if session:
                     for idx, changes in edited_rows.items():
                         # idx is the integer index in the dataframe
                         # Get the unique identifier (CREATED_ON) from the ORIGINAL dataframe (latest_df)
-                        # We must use the original 'latest_df' because the index corresponds to it.
                         row_key = latest_df.iloc[idx]["CREATED_ON"]
 
                         # Construct UPDATE parts
@@ -150,11 +191,11 @@ if session:
                             session.sql(sql_update, params=params).collect()
                             updates_count += 1
 
-                if updates_count > 0 or deletes_count > 0:
-                    st.success(f"Saved changes: {updates_count} updated, {deletes_count} deleted.")
+                if added_count > 0 or updates_count > 0 or deletes_count > 0:
+                    st.success(f"Saved changes: {added_count} added, {updates_count} updated, {deletes_count} deleted.")
                     # Rerun to refresh the table
                     st.rerun()
-                elif not editor_state.get("added_rows"):
+                else:
                     st.info("No changes to save.")
             else:
                 st.info("No changes detected.")
