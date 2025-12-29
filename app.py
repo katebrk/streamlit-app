@@ -34,11 +34,31 @@ rate_pct = st.number_input(
     format="%.2f"
 )
 
-# 3. Last Change Date
-last_change_date = st.date_input(
-    "Last Change Date",
-    value=date.today()
+# 3. Type (Actual / Forecast)
+rate_type = st.selectbox(
+    "Type",
+    ("Actual", "Forecast")
 )
+
+# 4. Forecast Date (Conditional)
+# 5. Last Change Date
+col1, col2 = st.columns(2)
+
+with col1:
+    last_change_date = st.date_input(
+        "Last Change Date",
+        value=date.today()
+    )
+
+with col2:
+    if rate_type == "Forecast":
+        forecast_date = st.date_input(
+            "Forecast Date",
+            value=date.today()
+        )
+    else:
+        forecast_date = None
+        st.write("") # Spacer
 
 if st.button("Submit"):
     if session:
@@ -49,6 +69,8 @@ if st.button("Submit"):
                 "CENTRAL_BANK_SHORT_NAME": central_bank_short,
                 "RATE_PCT": rate_pct,
                 "LAST_CHANGE_DATE": pd.to_datetime(last_change_date),
+                "TYPE": rate_type,
+                "FORECAST_DATE": pd.to_datetime(forecast_date) if forecast_date else None,
                 "CREATED_ON": pd.Timestamp.now()
             }])
 
@@ -58,7 +80,7 @@ if st.button("Submit"):
             # Write to the table
             snowpark_df.write.mode("append").save_as_table("central_bank_rates")
 
-            st.success(f"Successfully added record for {central_bank_short} with rate {rate_pct}% on {last_change_date}.")
+            st.success(f"Successfully added record for {central_bank_short} ({rate_type}).")
 
         except Exception as e:
             st.error(f"An error occurred during submission: {e}")
@@ -78,6 +100,8 @@ if session:
                 CENTRAL_BANK_SHORT_NAME,
                 RATE_PCT,
                 LAST_CHANGE_DATE,
+                TYPE,
+                FORECAST_DATE,
                 CREATED_ON
             FROM central_bank_rates
             ORDER BY CREATED_ON DESC
@@ -106,8 +130,17 @@ if session:
                     required=True
                 ),
                 "LAST_CHANGE_DATE": st.column_config.DateColumn(
-                    "Date",
+                    "Last Change Date",
                     required=True
+                ),
+                "TYPE": st.column_config.SelectboxColumn(
+                    "Type",
+                    options=["Actual", "Forecast"],
+                    required=True
+                ),
+                "FORECAST_DATE": st.column_config.DateColumn(
+                    "Forecast Date",
+                    required=False
                 ),
                 "CREATED_ON": st.column_config.DatetimeColumn(
                     "Created On",
@@ -133,19 +166,27 @@ if session:
 
                     for row in added_rows:
                         # Ensure required fields are present (checking keys)
-                        # Note: In the editor, 'CREATED_ON' will be missing or ignored
-                        if "CENTRAL_BANK_SHORT_NAME" in row and "RATE_PCT" in row and "LAST_CHANGE_DATE" in row:
+                        if "CENTRAL_BANK_SHORT_NAME" in row and "RATE_PCT" in row and "LAST_CHANGE_DATE" in row and "TYPE" in row:
+
+                            r_type = row["TYPE"]
+                            r_forecast_date = row.get("FORECAST_DATE")
+
+                            # Enforce constraint: If Type is Actual, Forecast Date is NULL
+                            if r_type == "Actual":
+                                r_forecast_date = None
+
                             new_records.append({
                                 "CENTRAL_BANK_FULL_NAME": None,
                                 "CENTRAL_BANK_SHORT_NAME": row["CENTRAL_BANK_SHORT_NAME"],
                                 "RATE_PCT": row["RATE_PCT"],
                                 "LAST_CHANGE_DATE": pd.to_datetime(row["LAST_CHANGE_DATE"]),
+                                "TYPE": r_type,
+                                "FORECAST_DATE": pd.to_datetime(r_forecast_date) if r_forecast_date else None,
                                 "CREATED_ON": pd.Timestamp.now()
                             })
 
                     if new_records:
                         df_new = pd.DataFrame(new_records)
-                        # Append to Snowflake table
                         session.create_dataframe(df_new).write.mode("append").save_as_table("central_bank_rates")
                         added_count = len(new_records)
 
@@ -153,9 +194,7 @@ if session:
                 if editor_state.get("deleted_rows"):
                     deleted_rows = editor_state["deleted_rows"]
                     for idx in deleted_rows:
-                        # idx is the integer index in the ORIGINAL dataframe
                         row_key = latest_df.iloc[idx]["CREATED_ON"]
-
                         sql_delete = "DELETE FROM central_bank_rates WHERE CREATED_ON = ?"
                         session.sql(sql_delete, params=[str(row_key)]).collect()
                         deletes_count += 1
@@ -166,20 +205,36 @@ if session:
 
                     for idx, changes in edited_rows.items():
                         # idx is the integer index in the dataframe
-                        # Get the unique identifier (CREATED_ON) from the ORIGINAL dataframe (latest_df)
-                        row_key = latest_df.iloc[idx]["CREATED_ON"]
+                        original_row = latest_df.iloc[idx]
+                        row_key = original_row["CREATED_ON"]
+
+                        # Determine final values to check constraint
+                        # We need to know if TYPE is effectively 'Actual'
+
+                        # Current values (from original)
+                        current_type = original_row["TYPE"]
+                        current_forecast = original_row["FORECAST_DATE"]
+
+                        # New values (from changes)
+                        new_type = changes.get("TYPE", current_type)
+                        new_forecast = changes.get("FORECAST_DATE", current_forecast)
+
+                        # Enforce Constraint
+                        if new_type == "Actual":
+                            # If effective type is Actual, force forecast date to None
+                            # We must ensure this is reflected in the update
+                            if new_forecast is not None:
+                                changes["FORECAST_DATE"] = None
 
                         # Construct UPDATE parts
                         set_clauses = []
                         params = []
 
-                        # 'changes' is a dict of {ColName: NewValue}
                         for col_name, new_value in changes.items():
                             set_clauses.append(f"{col_name} = ?")
                             params.append(new_value)
 
                         if set_clauses:
-                            # Add key to params
                             params.append(str(row_key))
 
                             sql_update = f"""
@@ -193,7 +248,6 @@ if session:
 
                 if added_count > 0 or updates_count > 0 or deletes_count > 0:
                     st.success(f"Saved changes: {added_count} added, {updates_count} updated, {deletes_count} deleted.")
-                    # Rerun to refresh the table
                     st.rerun()
                 else:
                     st.info("No changes to save.")
