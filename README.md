@@ -4,7 +4,7 @@ This repository contains the code for a Streamlit application designed to run **
 
 ## Purpose
 
-The app allows users to manually input interest rate data for central banks (ECB, BoE) and insert it into a Snowflake table.
+The app allows users to manually input interest rate data for central banks (ECB, BoE) and insert it into a Snowflake table. It also records the timestamp of the submission and displays the last 20 submissions.
 
 ## Snowflake Table Schema
 
@@ -15,7 +15,8 @@ create table central_bank_rates (
     central_bank_full_name VARCHAR(100),
     central_bank_short_name VARCHAR(100),
     rate_pct NUMBER(5,2),
-    last_change_date DATE
+    last_change_date DATE,
+    created_on TIMESTAMP
 );
 ```
 
