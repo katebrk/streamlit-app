@@ -68,22 +68,23 @@ with col2:
 if st.button("Submit"):
     if session:
         try:
-            # Explicit SQL Insert to avoid column order mismatch issues
+            # Explicit SQL Insert
+            # Use NULL literal for the full name since it's always null
+            # Use TRY_TO_DATE(?) for forecast date to handle potential stringified 'None' issues
             insert_sql = """
             INSERT INTO central_bank_rates
             (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (NULL, ?, ?, ?, ?, TRY_TO_DATE(?), ?)
             """
 
-            # Params must match the order in the VALUES clause
+            # Params
             params = [
-                None,
                 central_bank_short,
                 rate_pct,
                 last_change_date,
                 rate_type,
-                forecast_date,
-                datetime.now() # Use standard python datetime
+                str(forecast_date) if forecast_date else None, # Ensure we pass string or None. If None -> TRY_TO_DATE(NULL) -> NULL. If 'None' -> TRY_TO_DATE('None') -> NULL.
+                datetime.now()
             ]
 
             session.sql(insert_sql, params=params).collect()
@@ -174,7 +175,7 @@ if session:
                     insert_sql = """
                     INSERT INTO central_bank_rates
                     (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (NULL, ?, ?, ?, ?, TRY_TO_DATE(?), ?)
                     """
 
                     for row in added_rows:
@@ -184,21 +185,18 @@ if session:
                             r_type = row["TYPE"]
                             r_forecast_date = row.get("FORECAST_DATE")
 
-                            # Enforce constraint: If Type is Actual, Forecast Date is NULL
                             if r_type == "Actual":
                                 r_forecast_date = None
 
-                            # Convert dates safely to python date objects
-                            # pd.to_datetime returns Timestamp, .date() converts to datetime.date
                             p_last_change = pd.to_datetime(row["LAST_CHANGE_DATE"]).date()
 
                             if r_forecast_date:
-                                p_forecast = pd.to_datetime(r_forecast_date).date()
+                                # Convert to string for TRY_TO_DATE to handle safely
+                                p_forecast = str(pd.to_datetime(r_forecast_date).date())
                             else:
                                 p_forecast = None
 
                             params = [
-                                None,
                                 row["CENTRAL_BANK_SHORT_NAME"],
                                 row["RATE_PCT"],
                                 p_last_change,
@@ -215,9 +213,6 @@ if session:
                     deleted_rows = editor_state["deleted_rows"]
                     for idx in deleted_rows:
                         row_key = latest_df.iloc[idx]["CREATED_ON"]
-                        # row_key is Timestamp, convert to string or datetime for safety if needed,
-                        # but usually param binding handles existing timestamps fine.
-                        # Using str(row_key) is often safe for simple equality checks.
                         sql_delete = "DELETE FROM central_bank_rates WHERE CREATED_ON = ?"
                         session.sql(sql_delete, params=[str(row_key)]).collect()
                         deletes_count += 1
@@ -227,42 +222,29 @@ if session:
                     edited_rows = editor_state["edited_rows"]
 
                     for idx, changes in edited_rows.items():
-                        # idx is the integer index in the dataframe
                         original_row = latest_df.iloc[idx]
                         row_key = original_row["CREATED_ON"]
 
-                        # Determine final values to check constraint
-                        # We need to know if TYPE is effectively 'Actual'
-
-                        # Current values (from original)
                         current_type = original_row["TYPE"]
                         current_forecast = original_row["FORECAST_DATE"]
 
-                        # New values (from changes)
                         new_type = changes.get("TYPE", current_type)
                         new_forecast = changes.get("FORECAST_DATE", current_forecast)
 
-                        # Enforce Constraint
                         if new_type == "Actual":
-                            # If effective type is Actual, force forecast date to None
-                            # We must ensure this is reflected in the update
-                            # If forecast date was not None, or if user tried to set it
                             if new_forecast is not None:
                                 changes["FORECAST_DATE"] = None
 
-                        # Construct UPDATE parts
                         set_clauses = []
                         params = []
 
                         for col_name, new_value in changes.items():
-                            set_clauses.append(f"{col_name} = ?")
-
-                            # Handle potential conversions if new_value is ambiguous
-                            # st.data_editor might return strings for dates
-                            # But usually parameterized queries handle strings for dates OK.
-                            # If we want to be super strict, we could check types.
-                            # For now, we trust basic binding unless it fails.
-                            params.append(new_value)
+                            if col_name == "FORECAST_DATE":
+                                set_clauses.append(f"{col_name} = TRY_TO_DATE(?)")
+                                params.append(str(new_value) if new_value else None)
+                            else:
+                                set_clauses.append(f"{col_name} = ?")
+                                params.append(new_value)
 
                         if set_clauses:
                             params.append(str(row_key))
