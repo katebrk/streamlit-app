@@ -51,34 +51,42 @@ with col1:
     )
 
 with col2:
-    if rate_type == "Forecast":
-        forecast_date = st.date_input(
-            "Forecast Date",
-            value=date.today()
-        )
+    # Show disabled input if Actual to make it clear the field exists
+    is_forecast = (rate_type == "Forecast")
+
+    forecast_date_input = st.date_input(
+        "Forecast Date",
+        value=date.today(),
+        disabled=not is_forecast
+    )
+
+    if is_forecast:
+        forecast_date = forecast_date_input
     else:
         forecast_date = None
-        st.write("") # Spacer
 
 if st.button("Submit"):
     if session:
         try:
-            # Prepare data for insertion
-            df_data = pd.DataFrame([{
-                "CENTRAL_BANK_FULL_NAME": None,
-                "CENTRAL_BANK_SHORT_NAME": central_bank_short,
-                "RATE_PCT": rate_pct,
-                "LAST_CHANGE_DATE": pd.to_datetime(last_change_date),
-                "TYPE": rate_type,
-                "FORECAST_DATE": pd.to_datetime(forecast_date) if forecast_date else None,
-                "CREATED_ON": pd.Timestamp.now()
-            }])
+            # Explicit SQL Insert to avoid column order mismatch issues
+            insert_sql = """
+            INSERT INTO central_bank_rates
+            (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
 
-            # Create a Snowpark DataFrame
-            snowpark_df = session.create_dataframe(df_data)
+            # Params must match the order in the VALUES clause
+            params = [
+                None,
+                central_bank_short,
+                rate_pct,
+                last_change_date,
+                rate_type,
+                forecast_date,
+                pd.Timestamp.now()
+            ]
 
-            # Write to the table
-            snowpark_df.write.mode("append").save_as_table("central_bank_rates")
+            session.sql(insert_sql, params=params).collect()
 
             st.success(f"Successfully added record for {central_bank_short} ({rate_type}).")
 
@@ -162,7 +170,12 @@ if session:
                 # 1. Handle Added Rows
                 if editor_state.get("added_rows"):
                     added_rows = editor_state["added_rows"]
-                    new_records = []
+
+                    insert_sql = """
+                    INSERT INTO central_bank_rates
+                    (CENTRAL_BANK_FULL_NAME, CENTRAL_BANK_SHORT_NAME, RATE_PCT, LAST_CHANGE_DATE, TYPE, FORECAST_DATE, CREATED_ON)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """
 
                     for row in added_rows:
                         # Ensure required fields are present (checking keys)
@@ -175,20 +188,18 @@ if session:
                             if r_type == "Actual":
                                 r_forecast_date = None
 
-                            new_records.append({
-                                "CENTRAL_BANK_FULL_NAME": None,
-                                "CENTRAL_BANK_SHORT_NAME": row["CENTRAL_BANK_SHORT_NAME"],
-                                "RATE_PCT": row["RATE_PCT"],
-                                "LAST_CHANGE_DATE": pd.to_datetime(row["LAST_CHANGE_DATE"]),
-                                "TYPE": r_type,
-                                "FORECAST_DATE": pd.to_datetime(r_forecast_date) if r_forecast_date else None,
-                                "CREATED_ON": pd.Timestamp.now()
-                            })
+                            params = [
+                                None,
+                                row["CENTRAL_BANK_SHORT_NAME"],
+                                row["RATE_PCT"],
+                                pd.to_datetime(row["LAST_CHANGE_DATE"]),
+                                r_type,
+                                pd.to_datetime(r_forecast_date) if r_forecast_date else None,
+                                pd.Timestamp.now()
+                            ]
 
-                    if new_records:
-                        df_new = pd.DataFrame(new_records)
-                        session.create_dataframe(df_new).write.mode("append").save_as_table("central_bank_rates")
-                        added_count = len(new_records)
+                            session.sql(insert_sql, params=params).collect()
+                            added_count += 1
 
                 # 2. Handle Deleted Rows
                 if editor_state.get("deleted_rows"):
@@ -223,6 +234,7 @@ if session:
                         if new_type == "Actual":
                             # If effective type is Actual, force forecast date to None
                             # We must ensure this is reflected in the update
+                            # If forecast date was not None, or if user tried to set it
                             if new_forecast is not None:
                                 changes["FORECAST_DATE"] = None
 
